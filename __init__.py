@@ -1,0 +1,1 @@
+from slider_ftc_control import config
