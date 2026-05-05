@@ -1,111 +1,171 @@
-# Slider Fault-Tolerant Control (FTC)
+# Slider Fault-Tolerant Control / Allocation (FTC)
 
-This package implements a fault-tolerant control pipeline for the planar slider spacecraft emulator.  
-It is designed for use within a ROS2-based simulation and experimental setup.
+This package implements a modular fault-tolerant control pipeline for the planar slider spacecraft emulator.
 
----
+It consists of:
+- A **controller** (MPC → desired wrench)
+- An **allocator** (wrench → thruster commands)
+- A **thruster state publisher** (failure injection)
 
-## Overview
-
-The pipeline is split into three modular nodes:
-
-```
-/odom + /target_point
-        ↓
-   Controller (MPC)
-        ↓  /thrust_cmd
-   Allocator (AMS-based)
-        ↓  /eight_thrust_pulse
-   Slider (Gazebo / hardware)
-```
-
-Additionally, a dedicated node publishes the current thruster health state.
+Each component can be used **independently or together**.
 
 ---
 
-## Nodes
+# System Architecture
 
-### 1. Controller (`control_node`)
+```
+/odom + /target_point + /thruster_state
+                    ↓
+              control_node
+                    ↓  /thrust_cmd
+              allocator_node
+                    ↓  /eight_thrust_pulse
+               Slider (Gazebo)
+```
 
-- Computes desired wrench:
-  ```
-  a_d = [Fx, Fy, τ]
-  ```
-- Uses MPC with selectable constraints:
-  - `box`
-  - `ellipsoid`
-  - `ams`
+---
 
-**Subscribes to:**
-- `/odom`
-- `/target_point`
-- `/thruster_state`
+# Nodes
 
-**Publishes:**
+## 1. Controller (`control_node`)
+
+Computes the desired wrench:
+
+```
+a_d = [Fx, Fy, τ]
+```
+
+### Subscribes to
+- `/odom` → system state  
+  `[x, y, θ, vx, vy, ω]`
+- `/target_point` → reference trajectory (Odometry)
+- `/thruster_state` → current failure configuration
+
+### Publishes
 - `/thrust_cmd` (`geometry_msgs/Vector3`)
 
+### Key parameter
+
+```yaml
+bounds_mode: "box" | "ellipsoid" | "ams"
+```
+
+- `box` → fast, conservative
+- `ellipsoid` → smooth approximation
+- `ams` → exact feasible wrench set (slowest, most accurate)
+
 ---
 
-### 2. Allocator (`allocator_node`)
+## 2. Allocator (`allocator_node`)
 
-- Maps desired wrench → individual thruster commands
-- Uses Attainable Moment Set (AMS) geometry
-- Applies failure handling:
-  - Passive failure → force = 0
-  - Active failure → force = max
+Converts desired wrench into individual thruster commands.
 
-**Subscribes to:**
+### Subscribes to
 - `/thrust_cmd`
 - `/thruster_state`
 
-**Publishes:**
+### Publishes
 - `/eight_thrust_pulse` (`std_msgs/UInt8MultiArray`)
+
+### Behavior
+
+- Uses precomputed AMS geometry
+- Enforces failure constraints:
+  - `0` → thruster OFF
+  - `2` → thruster forced to max
 
 ---
 
-### 3. Thruster State (`thruster_state`)
+## 3. Thruster State (`thruster_state`)
 
-Publishes health state of each thruster.
+Publishes the current health state of each thruster.
 
-**Convention:**
+### Convention
+
 ```
 0 = passive failure (OFF)
 1 = healthy
 2 = active failure (stuck ON)
 ```
 
-**Publishes:**
+### Publishes
 - `/thruster_state`
 
-Supports:
-- configurable failure times
-- configurable failure modes
+---
+
+# Changing Failure Behavior
+
+Failure behavior is configured in the **launch file**:
+
+```
+launch/launch_ftc_pipe.launch.py
+```
+
+Example:
+
+```python
+parameters=[{
+    "failure_times":  [15.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0],
+    "failure_states": [0,    1,    1,    1,    1,    1,    1,    1],
+}]
+```
+
+### Meaning
+
+- At `t = 15s`, thruster 1 → state `0` (OFF)
+- `-1.0` → never fails
+
+### Example cases
+
+**Single failure**
+```yaml
+failure_times:  [10, -1, -1, -1, -1, -1, -1, -1]
+failure_states: [0,   1,  1,  1,  1,  1,  1,  1]
+```
+
+**Multiple failures**
+```yaml
+failure_times:  [10, 20, -1, -1, -1, -1, -1, -1]
+failure_states: [0,  2,  1,  1,  1,  1,  1,  1]
+```
 
 ---
 
-## AMS Cache
+# Using Nodes Independently
 
-AMS geometry is precomputed and stored to disk to avoid recomputation at runtime.
+You can run only parts of the pipeline by editing the launch file.
 
-### Build cache
+## Controller only
+
+Comment out allocator:
+
+```python
+return LaunchDescription([
+    controller_node,
+])
+```
+
+Useful for:
+- debugging MPC
+- logging desired wrench
+
+---
+
+## Allocator only
+
+Provide your own `/thrust_cmd`:
 
 ```bash
-ros2 run slider_ftc_control build_ams_cache
+ros2 topic pub /thrust_cmd geometry_msgs/msg/Vector3 "{x: 0.5, y: 0.0, z: 0.0}"
 ```
 
-This generates:
-
-```
-~/slider_ws/ams_cache.pkl
-```
-
-Both controller and allocator load this file at startup.
+Useful for:
+- testing allocation
+- validating AMS geometry
 
 ---
 
-## Launch
-
-Run the full FTC pipeline:
+## Full pipeline
 
 ```bash
 ros2 launch slider_ftc_control launch_ftc_pipe.launch.py
@@ -113,44 +173,95 @@ ros2 launch slider_ftc_control launch_ftc_pipe.launch.py
 
 ---
 
-## Parameters
+# AMS Cache (Required)
 
-### Controller
+Both controller and allocator depend on a precomputed AMS cache.
 
-```yaml
-bounds_mode: "box" | "ellipsoid" | "ams"
+## Build once before running
+
+```bash
+ros2 run slider_ftc_control build_ams_cache
 ```
 
-### Thruster State
+This creates:
 
-```yaml
-failure_times:  [t1, t2, ..., t8]
-failure_states: [s1, s2, ..., s8]
 ```
+~/slider_ws/ams_cache.pkl
+```
+
+### Important
+
+- Must be rebuilt if:
+  - thruster configuration changes
+  - system parameters change
+- Both nodes load this file at startup
 
 ---
 
-## Dependencies
+# Run Script (`run_ftc.sh`)
+
+The `.sh` script automates the full pipeline:
+
+### What it does
+
+1. Builds workspace
+2. Starts Gazebo
+3. Starts rosbag recording
+4. Starts target trajectory node
+5. Launches FTC pipeline
+6. Handles clean shutdown
+
+### Run it
+
+```bash
+./run_tfc_pipe.sh
+```
+
+### Notes
+
+- Bag is saved to:
+  ```
+  ~/slider_ws/rosbags/
+  ```
+- Use Ctrl+C to stop cleanly
+- Plotting is optional and handled at shutdown
+
+---
+
+# Topics Summary
+
+| Topic | Type | Description |
+|------|------|------------|
+| `/odom` | Odometry | Current state |
+| `/target_point` | Odometry | Reference |
+| `/thruster_state` | UInt8MultiArray | Failure configuration |
+| `/thrust_cmd` | Vector3 | Desired wrench |
+| `/eight_thrust_pulse` | UInt8MultiArray | PWM signals |
+
+---
+
+# Dependencies
 
 - ROS2 Humble
 - NumPy
-- CasADi (for MPC)
-- Custom slider packages:
+- CasADi
+- slider ecosystem:
   - `slider_gazebo`
   - `slider_description`
   - `target_trajectories`
 
 ---
 
-## Notes
+# Notes
 
-- AMS-based allocation assumes precomputed geometry
-- Designed for on/off thruster systems
-- Focus is on passive fault-tolerant control
+- Designed for **on/off thruster systems**
+- Supports **passive and active failures**
+- AMS ensures physically feasible control
+- Modular design allows easy testing and extension
 
 ---
 
-## Author
+# Author
 
 Glim Lindaregard  
 MSc Space Engineering, LTU
