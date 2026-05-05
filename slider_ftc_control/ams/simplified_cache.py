@@ -53,6 +53,7 @@ def _orient_outward(n: np.ndarray, b: float, c: np.ndarray, tol: float = 1e-12):
 # ------------------------ Main cache builder --------------------------
 
 def build_simplified_ams_cache(
+    cfg,
     ams_cache: List[AMSMode]
 ) -> List[List[Plane]]:
     
@@ -62,7 +63,7 @@ def build_simplified_ams_cache(
     simplified_cache: List[List[Plane]] = []
 
     for mode in ams_cache:
-        A = np.asarray(mode.A_mode, dtype=float)
+        A = cfg.phys.A
 
         V_list = []
         normals = []

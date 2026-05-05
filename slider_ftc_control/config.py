@@ -26,7 +26,7 @@ class PhysicalParams:
     u_min: np.ndarray
     u_max: np.ndarray
     A: np.ndarray
-    #max_thrust: float
+    max_thrust: float
 
 
 @dataclass(frozen=True)
@@ -37,10 +37,10 @@ class WorldLimits:
     y_max: float
     wall_buffer: float
 
-#@dataclass(frozen=True)
-#class PWMparams:
- #   pwm_frequency: int
- #   pwm_resolution: int
+@dataclass(frozen=True)
+class PWMparams:
+    pwm_frequency: int
+    pwm_resolution: int
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ class SliderConfig:
     phys: PhysicalParams
     mpc: MPCParams
     world: WorldLimits
-    #pwm: PWMparams
+    pwm: PWMparams
 
 
 
@@ -145,7 +145,7 @@ def make_default_config() -> SliderConfig:
         u_min=u_min,
         u_max=u_max,
         A=A,
-        #max_thrust = max_thrust,
+        max_thrust = max_thrust,
     )
 
     # --- World limits ---
@@ -163,14 +163,14 @@ def make_default_config() -> SliderConfig:
         wall_buffer=wall_buffer,
     )
 
-    #pwm = PWMparams(
-        #pwm_frequency=pwm_frequency,
-        #pwm_resolution=pwm_resolution,
-    #)
+    pwm = PWMparams(
+        pwm_frequency=pwm_frequency,
+        pwm_resolution=pwm_resolution,
+    )
 
     return SliderConfig(
         phys=phys,
         mpc=mpc,
         world=world,
-        #pwm=pwm,
+        pwm=pwm,
     )

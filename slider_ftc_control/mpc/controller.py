@@ -18,7 +18,7 @@ class MPCDims:
     opt_len: int
     nX: int
 
-# --- Controller based on Sathyas design --- 
+
 class MPCController:
     def __init__(self, cfg: SliderConfig, bounds_mode: str):
         self.bounds_mode = bounds_mode
@@ -57,7 +57,6 @@ class MPCController:
         # --- symbolic states and inputs ---
         x = ca.SX.sym('x')
         y = ca.SX.sym('y')
-        #q = ca.SX.sym('q', 4)
         theta = ca.SX.sym('theta')
         vx = ca.SX.sym('vx')
         vy = ca.SX.sym('vy')
@@ -66,34 +65,26 @@ class MPCController:
         states = ca.vertcat(x, y, theta, vx, vy, r)
 
         ad = ca.SX.sym('ad', n_controls, 1)
-        Fx = ad[0]
-        Fy = ad[1]
+        fx = ad[0]
+        fy = ad[1]
         Tau = ad[2]
-        #f_body = ca.vertcat(Fx, Fy, 0)
 
         c = ca.cos(theta)
         s = ca.sin(theta)
 
-        fxx =  c*Fx - s*Fy
-        fyy =  s*Fx + c*Fy
-
-        #f_world = self.rotate_vec_by_quat(q, f_body)
-        #fxx = f_world[0]
-        #fyy = f_world[1]
-
-        #omega_q = ca.vertcat(0, 0, r, 0)
-        #q_dot = 0.5 * self.quat_mul(q, omega_q)
+        Fx =  c*fx - s*fy
+        Fy =  s*fx + c*fy
 
         dwdt = ca.vertcat(
             vx,
             vy,
-            r, #q_dot,  # dq/dt
-            fxx / m,
-            fyy / m,
+            r,
+            Fx / m,
+            Fy / m,
             Tau / Izz,
         )
 
-        f = ca.Function('f', [states, ad], [dwdt])
+        f = ca.Function('f', [states, ad], [dwdt])  #f(x,u) = x_dot
 
         # --- RK4 discrete model ---
         Xk_sym = ca.SX.sym('Xk', n_states)
@@ -111,7 +102,7 @@ class MPCController:
 
         # --- optimization variables ---
         U = ca.SX.sym('U', n_controls, N)      # 3xN
-        X = ca.SX.sym('X', n_states, N + 1)    # 9x(N+1)
+        X = ca.SX.sym('X', n_states, N + 1)    # 6x(N+1)
 
         M = self.max_planes
 
@@ -152,22 +143,16 @@ class MPCController:
 
             next_state = X[:, k + 1]
 
-            q=state[2:6]
-            q_d=xRef_sym[2:6]
-
-            q_err = self.quat_mul(q, self.quat_conj(q_d))
-            q_err = self._hemisphere_w_positive(q_err)
-
             next_state_pred = F_RK4(state, control)
             g.append(next_state - next_state_pred)
             lbg += [0]*n_states
             ubg += [0]*n_states
 
 
-            Fx = control[0]; Fy = control[1]; Tau = control[2]
+            fx = control[0]; fy = control[1]; Tau = control[2]
 
-            Fx_cap = ca.if_else(Fx >= 0, Fx_pos, Fx_neg)
-            Fy_cap = ca.if_else(Fy >= 0, Fy_pos, Fy_neg)
+            Fx_cap = ca.if_else(fx >= 0, Fx_pos, Fx_neg)
+            Fy_cap = ca.if_else(fy >= 0, Fy_pos, Fy_neg)
             Tau_cap = ca.if_else(Tau >= 0, Tau_pos, Tau_neg)
 
             if self.use_planes:
@@ -176,19 +161,18 @@ class MPCController:
                     n1 = Nmat[i, 1]
                     n2 = Nmat[i, 2]
                     bi = bvec[i]
-                    g.append(n0*Fx + n1*Fy + n2*Tau - bi)  # <= 0   a_d*n -b <= 0
+                    g.append(n0*fx + n1*fy + n2*Tau - bi)  # <= 0   a_d*n -b <= 0
                     lbg += [-np.inf]
                     ubg += [0.0]
 
             if self.use_ellipsoid:
-                g.append((Fx/Fx_cap)**2 + (Fy/Fy_cap)**2 + (Tau/Tau_cap)**2)  #Ensures feasible controls
+                g.append((fx/Fx_cap)**2 + (fy/Fy_cap)**2 + (Tau/Tau_cap)**2)
                 lbg += [0.0]
                 ubg += [1.0]
 
 
             err = state - xRef_sym
             err[2] = self._wrap_angle(state[2] - xRef_sym[2])  # Wrap angle error to [-pi, pi]
-            #err[2:6] = q_err  # Quaternion error
             obj = obj + ca.mtimes([err.T, Q, err]) + ca.mtimes([control.T, R, control])
 
         g_stack = ca.vertcat(*g)
@@ -243,9 +227,6 @@ class MPCController:
             lbx.extend([ -FxMax,  -FyMax,  -TauMax])
             ubx.extend([ +FxMax,  +FyMax,  +TauMax])
 
-            #lbx.extend([ -np.inf,  -np.inf,  -np.inf])
-            #ubx.extend([ +np.inf,  +np.inf,  +np.inf])
-
         lbx = np.array(lbx, dtype=float)
         ubx = np.array(ubx, dtype=float)
 
@@ -271,7 +252,6 @@ class MPCController:
              x_current: np.ndarray,
              x_ref: np.ndarray,
              bounds: WrenchBounds,
-             caps: np.ndarray,
              planes: np.ndarray | None = None) -> np.ndarray:
 
         n_states = self.dims.n_states
@@ -279,18 +259,26 @@ class MPCController:
         N = self.dims.N
         nX = self.dims.nX
 
+        caps = np.array([
+            bounds.Fx_max, abs(bounds.Fx_min),
+            bounds.Fy_max, abs(bounds.Fy_min),
+            bounds.Tau_max, abs(bounds.Tau_min),
+        ], dtype=float)
+
+        # avoid divide-by-zero in MPC constraint
+        caps = np.maximum(caps, 1e-6)
+
         x_current = np.asarray(x_current, float).reshape(n_states)
         x_ref = np.asarray(x_ref, float).reshape(n_states)
 
-        # --- Parameters P = [x0; x_ref;caps] ---
-
+        # --- Build runtime parameters P = [x0; x_ref;caps; planes] ---
         if self.use_planes:
             if planes is None:
                 raise ValueError("MPCController: planes must be provided when use_planes=True")
             planes = np.asarray(planes, float)
             M = self.max_planes
             planes_pad = np.zeros((M, 4), dtype=float)
-            planes_pad[:, 3] = 1e9  # large finite (inactive)
+            planes_pad[:, 3] = 1e9  # Un-used plane spots are set to large finite (inactive)
 
             m = min(M, planes.shape[0])
             planes_pad[:m, :] = planes[:m, :]
@@ -300,6 +288,9 @@ class MPCController:
             P = np.concatenate([x_current, x_ref, caps])
 
 
+
+
+
         # --- Initial guess (warm start) initial guess is previous state ---
         x0opt = self.warm_start()
 
@@ -307,7 +298,6 @@ class MPCController:
         ubx = self.ubx_template.copy()
 
         # --- Attatch custom bounds from "bounds" depending on thruster health ---
-
         if self.bounds_mode == "box":
             lb_u_stage = np.array([bounds.Fx_min, bounds.Fy_min, bounds.Tau_min], float)
             ub_u_stage = np.array([bounds.Fx_max, bounds.Fy_max, bounds.Tau_max], float)
@@ -381,25 +371,6 @@ class MPCController:
 
         return x0opt
     
-    def quat_mul(self,q1, q2):
-        x1,y1,z1,w1 = q1[0],q1[1],q1[2],q1[3]
-        x2,y2,z2,w2 = q2[0],q2[1],q2[2],q2[3]
-        return ca.vertcat(
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        w1*z2 + x1*y2 - y1*x2 + z1*w2,
-        w1*w2 - x1*x2 - y1*y2 - z1*z2
-        )
-    
-    def quat_conj(self,q):
-        return ca.vertcat(-q[0], -q[1], -q[2], q[3])
-
-    def rotate_vec_by_quat(self,q, v):
-        vq = ca.vertcat(v[0], v[1], v[2], 0)
-        return self.quat_mul(self.quat_mul(q, vq), self.quat_conj(q))[0:3]
-    
-    def _hemisphere_w_positive(self,q):
-        return ca.if_else(q[3] < 0, -q, q)
 
     def _wrap_angle(self,dtheta):
         # dtheta can be SX/MX

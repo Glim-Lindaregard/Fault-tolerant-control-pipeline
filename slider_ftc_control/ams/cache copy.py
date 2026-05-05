@@ -51,10 +51,10 @@ def build_ams_for_mask(cfg: SliderConfig, A_mode: np.ndarray, mask: np.ndarray) 
 
     facets = []
 
-    zero_cols = np.where(np.all(np.abs(A) < tol, axis=0))[0]
+    #zero_cols = np.where(np.all(np.abs(A) < tol, axis=0))[0]
 
-    if len(zero_cols) >= N - 1:
-        return []
+    #if len(zero_cols) >= N - 1:
+    #    return []
 
     # --- Loop over thruster pairs, ignoring paires when one columns is zero ---
     for i in range(N - 1):
@@ -130,7 +130,7 @@ def build_ams_cache(cfg: SliderConfig) -> List[AMSMode]:
         n_failed = int((mask == 0).sum())
         A_mode = mask_columns(cfg.phys.A, mask)
 
-        # --- Dont compute AMS when more then max_failed_thr are broken ---
+        # --- Dont compute AMS when more then max_failed_thr are broken --- ##########################################
         if n_failed > max_failed:
             cache[idx] = AMSMode(
                 A_mode = A_mode,

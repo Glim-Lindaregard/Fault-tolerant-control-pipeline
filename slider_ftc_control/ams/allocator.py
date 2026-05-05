@@ -15,7 +15,7 @@ def allocate_wrench(a_d: List[float],
     tol = 1e-15
 
 
-    A_current = mode.A_mode
+    A = cfg.phys.A
     facets = mode.facets
 
     if not facets:
@@ -25,7 +25,7 @@ def allocate_wrench(a_d: List[float],
     # --- Search method --- 
     for Uk in facets:
 
-        Vk = A_current @ Uk
+        Vk = A @ Uk
         adi = Vk[:,0]
 
         if np.all(np.abs(adi) < tol):
